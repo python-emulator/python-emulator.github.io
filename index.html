@@ -27,7 +27,6 @@
         .btn-primary { @apply bg-blue-600 text-white hover:bg-blue-700 shadow-md hover:shadow-lg; }
         .btn-secondary { @apply bg-green-500 text-white hover:bg-green-600 shadow-md hover:shadow-lg; }
         .btn-tertiary { @apply bg-gray-600 text-white hover:bg-gray-700; }
-        .btn-google { @apply bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 shadow; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800 flex flex-col h-screen">
@@ -59,13 +58,16 @@
                     <button id="run-button" class="btn btn-primary"><i class="fas fa-play"></i>Run</button>
                 </div>
             </div>
-            <textarea id="code-editor" class="w-full flex-grow border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" spellcheck="false">print("Hello World!")</textarea>
+            <textarea id="code-editor" class="w-full flex-grow border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" spellcheck="false">print("Hello World!")
+</textarea>
         </div>
 
         <!-- Output -->
         <div class="flex-grow flex flex-col bg-white border border-gray-200 rounded-lg shadow-sm p-4 gap-3">
             <label for="output" class="text-lg font-bold">Output</label>
-            <pre id="output" class="w-full flex-grow bg-gray-800 text-white rounded-lg p-3 overflow-auto whitespace-pre-wrap text-sm"></pre>
+            <div id="output-container" class="w-full flex-grow bg-gray-800 text-white rounded-lg p-3 overflow-auto flex flex-col">
+                <pre id="output" class="flex-grow whitespace-pre-wrap text-sm"></pre>
+            </div>
         </div>
     </main>
 
@@ -82,6 +84,15 @@
         </div>
     </div>
     
+    <!-- Custom Input Modal (ใหม่) -->
+    <div id="input-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-40">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md text-left shadow-xl">
+            <p id="modal-prompt" class="text-gray-800 mb-4 font-semibold"></p>
+            <input id="modal-input" type="text" class="w-full border border-gray-300 rounded-lg px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <button id="modal-submit" class="btn btn-primary w-full">Submit</button>
+        </div>
+    </div>
+
     <!-- Toast Notification -->
     <div id="toast" class="hidden fixed bottom-5 right-5 bg-green-500 text-white px-5 py-3 rounded-lg shadow-xl">
         <p id="toast-message"></p>
@@ -90,14 +101,12 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        // --- แก้ไข: เพิ่ม signInAnonymously, signInWithCustomToken ---
         import { getAuth, onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         // --- GLOBAL VARIABLES (Provided by the environment) ---
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        // --- แก้ไข: เพิ่มตัวแปรสำหรับ initial auth token ---
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         // --- DOM Elements ---
@@ -115,9 +124,14 @@
         const closeModalButton = document.getElementById('close-modal-button');
         const toast = document.getElementById('toast');
         const toastMessage = document.getElementById('toast-message');
+        const inputModal = document.getElementById('input-modal');
+        const modalPrompt = document.getElementById('modal-prompt');
+        const modalInput = document.getElementById('modal-input');
+        const modalSubmit = document.getElementById('modal-submit');
 
         let pyodide = null;
         let db, auth;
+        let resolveInputPromise = null;
 
         // --- Utility Functions ---
         const showToast = (message) => {
@@ -132,12 +146,43 @@
         };
 
         const appendToOutput = (message, isError = false) => {
-            if (outputElement.textContent.startsWith("Running...")) {
+            if (outputElement.textContent === "Running...") {
                 outputElement.textContent = '';
             }
-            outputElement.textContent += message + '\n';
+            outputElement.textContent += message;
             if (isError) outputElement.classList.add('text-red-400');
         };
+
+        // --- Custom Input Logic ---
+        window.awaitableGetInput = (promptText) => {
+            appendToOutput("waiting for answer in popup\n");
+            modalPrompt.textContent = promptText;
+            modalInput.value = ''; // Clear previous input
+            inputModal.classList.remove('hidden');
+            modalInput.focus();
+            return new Promise(resolve => {
+                resolveInputPromise = resolve;
+            });
+        };
+
+        const submitModalInput = () => {
+            if (resolveInputPromise) {
+                const value = modalInput.value;
+                inputModal.classList.add('hidden');
+                // Echo the prompt and answer to the main console
+                appendToOutput(`${modalPrompt.textContent}${value}\n`);
+                resolveInputPromise(value);
+                resolveInputPromise = null;
+            }
+        };
+
+        modalSubmit.addEventListener('click', submitModalInput);
+        modalInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                submitModalInput();
+            }
+        });
 
         // --- URL Sharing Logic ---
         const loadCodeFromURL = () => {
@@ -151,16 +196,11 @@
             }
         };
 
-        let debounceTimeout;
         const updateURLWithCode = () => {
-            clearTimeout(debounceTimeout);
-            debounceTimeout = setTimeout(() => {
-                const base64Code = btoa(unescape(encodeURIComponent(codeEditor.value)));
-                history.replaceState(null, '', '#' + base64Code);
-            }, 500);
+            // This logic is disabled due to security restrictions in some environments.
         };
         
-        // --- Firebase Logic (แก้ไขใหม่) ---
+        // --- Firebase Logic ---
         const setupFirebase = () => {
             if (Object.keys(firebaseConfig).length === 0) {
                 console.warn("Firebase config is not available.");
@@ -170,9 +210,7 @@
                 const app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
-                // เริ่มต้นกระบวนการ Auth
                 initializeAuth(); 
-                // ตั้งค่า listener เพื่อรอรับการเปลี่ยนแปลงสถานะ
                 onAuthStateChanged(auth, user => {
                     updateUIForUser(user);
                     if (user && !user.isAnonymous) {
@@ -184,7 +222,6 @@
             }
         };
         
-        // ฟังก์ชันใหม่สำหรับจัดการการลงชื่อเข้าใช้
         const initializeAuth = async () => {
             try {
                 if (initialAuthToken) {
@@ -199,12 +236,10 @@
 
         const updateUIForUser = (user) => {
             userAuthSection.innerHTML = '';
-            // แสดง UI สำหรับผู้ใช้ที่ลงชื่อเข้าใช้ (ไม่ใช่ anonymous)
             if (user && !user.isAnonymous) {
                 saveButton.classList.remove('hidden');
                 const userInfo = document.createElement('div');
                 userInfo.className = 'flex items-center gap-3';
-                // ใช้ uid ชั่วคราวหาก displayName ไม่มี
                 const displayName = user.displayName || `User (${user.uid.substring(0, 6)})`;
                 const photoURL = user.photoURL || 'https://placehold.co/32x32/E2E8F0/4A5568?text=U';
                 userInfo.innerHTML = `
@@ -217,7 +252,6 @@
                 logoutButton.onclick = () => signOut(auth);
                 userAuthSection.append(userInfo, logoutButton);
             } else {
-                // ซ่อนปุ่ม Save สำหรับผู้ใช้ anonymous หรือยังไม่ login
                 saveButton.classList.add('hidden');
                 const statusText = document.createElement('span');
                 statusText.className = 'text-gray-500 text-sm';
@@ -264,10 +298,14 @@
             };
             try {
                 pyodide = await loadPyodide({ stdout: progressHandler, stderr: progressHandler });
+                // --- แก้ไข: เพิ่ม \n เพื่อให้แน่ใจว่าขึ้นบรรทัดใหม่เสมอ ---
+                pyodide.setStdout({ batched: (text) => appendToOutput(text + '\n') });
+                pyodide.setStderr({ batched: (text) => appendToOutput(text + '\n', true) });
+
                 loadingOverlay.classList.add('opacity-0');
                 setTimeout(() => loadingOverlay.classList.add('hidden'), 1000);
                 clearOutput();
-                appendToOutput("✅ Ready to run Python code!");
+                appendToOutput("✅ Ready to run Python code!\n");
                 loadCodeFromURL();
                 setupFirebase();
             } catch (error) {
@@ -283,13 +321,42 @@
             if (!pyodide) return;
             runButton.disabled = true;
             clearOutput();
-            appendToOutput("Running...");
+            appendToOutput("Running...\n");
+
             try {
                 await pyodide.loadPackagesFromImports(codeEditor.value);
-                await pyodide.runPythonAsync(codeEditor.value);
+
+                // --- Code Transformation for input() ---
+                const originalCode = codeEditor.value;
+                const helperCode = `
+import js
+import sys
+from pyodide.ffi import to_js
+async def __custom_input(prompt=""):
+    # This function now calls the JS function that shows the modal
+    return await js.window.awaitableGetInput(prompt)
+`;
+                const transformedCode = originalCode.replace(/(?<![a-zA-Z0-9_])input\s*\(/g, 'await __custom_input(');
+                const indentedCode = transformedCode.split('\n').map(line => '    ' + line).join('\n');
+                const finalCode = `${helperCode}
+import asyncio
+async def __main__():
+${indentedCode}
+
+__main__()
+`;
+                // --- End Transformation ---
+
+                await pyodide.runPythonAsync(finalCode);
+
             } catch (error) {
+                // The stderr redirect will handle displaying the error.
                 console.error(error);
             } finally {
+                // Hide modal if it was left open by an error
+                if (!inputModal.classList.contains('hidden')) {
+                    inputModal.classList.add('hidden');
+                }
                 runButton.disabled = false;
             }
         });
@@ -309,14 +376,6 @@
             copyButton.textContent = 'Copied!';
             setTimeout(() => { copyButton.textContent = 'Copy'; }, 2000);
         });
-
-        // --- Console Interceptor ---
-        (() => {
-            const oldLog = console.log;
-            const oldError = console.error;
-            console.log = (...args) => { appendToOutput(args.join(' ')); oldLog.apply(console, args); };
-            console.error = (...args) => { appendToOutput(String(args[0]), true); oldError.apply(console, args); };
-        })();
 
         // --- Start ---
         main();
